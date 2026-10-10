@@ -1,121 +1,140 @@
-from flask import Flask, request, render_template_string
-import socket, requests, datetime
+from flask import Flask, request, redirect, flash, send_file
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+import requests, socket, sqlite3, datetime, io
+from werkzeug.security import generate_password_hash, check_password_hash
+from fpdf import FPDF
 
 app = Flask(__name__)
+app.secret_key = "pius-ultra-2026-ado-ekiti"
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
 
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Piuscyber P4.0 PRO MAX</title>
-<style>
-body{background:#000;color:#0f0;font-family:monospace;margin:0;padding:15px}
-.box{border:2px solid #ff9900;max-width:600px;margin:20px auto;padding:20px;border-radius:10px;box-shadow:0 0 20px #ff9900}
-.header{background:#ff9900;color:#000;text-align:center;padding:10px;font-weight:bold;font-size:18px;border-radius:5px}
-input{width:90%;padding:12px;margin:10px 0;background:#111;color:#0f0;border:1px solid #ff9900;border-radius:5px}
-button{background:#ff9900;color:#000;border:none;padding:12px 25px;font-weight:bold;cursor:pointer;border-radius:5px;width:95%}
-button:hover{background:#ffaa22;transform:scale(1.05)}
-.result{background:#111;border:1px solid #333;padding:15px;margin-top:15px;border-radius:5px;text-align:left;white-space:pre-wrap}
-.green{color:#0f0}.orange{color:#ff9900}.red{color:#ff4444}
-.blink{animation:blink 1s infinite}@keyframes blink{50%{opacity:0}}
-</style>
-</head>
-<body>
-<div class="box">
-<div class="header">⚡ Piuscyber P4.0 PRO MAX ⚡</div>
-<p style="text-align:center">Advanced IP Intelligence + Camera Scanner<br><span class="green">Your IP: {{myip}} | {{mycity}}</span> <span class="blink">● LIVE</span></p>
+def init_db():
+    conn = sqlite3.connect('p5.db')
+    c = conn.cursor()
+    c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS scans (id INTEGER PRIMARY KEY, user_id INTEGER, ip TEXT, country TEXT, city TEXT, isp TEXT, date TEXT)')
+    conn.commit()
+    conn.close()
+init_db()
 
-<form method="POST">
-<input name="ip" value="{{target}}" placeholder="Enter IP e.g 8.8.8.8" required>
-<button type="submit">🔍 SCAN NOW - PRO MAX</button>
-</form>
+class User(UserMixin):
+    def __init__(self, id, username):
+        self.id = id
+        self.username = username
 
-{% if result %}
-<div class="result">{{result|safe}}</div>
-{% endif %}
+@login_manager.user_loader
+def load_user(user_id):
+    conn = sqlite3.connect('p5.db')
+    c = conn.cursor()
+    c.execute("SELECT id, username FROM users WHERE id=?", (user_id,))
+    u = c.fetchone()
+    conn.close()
+    if u:
+        return User(u[0], u[1])
+    return None
 
-<p style="text-align:center;font-size:10px;margin-top:15px">Built by Piuscyber | Ado-Ekiti, Nigeria<br>github.com/piuscyber/piuscyber-p3.0-pro</p>
-</div>
-</body>
-</html>
-"""
-
-def get_my_ip():
+def scan_ip(ip):
     try:
-        r = requests.get("https://ipinfo.io/json", timeout=5).json()
-        return r.get('ip','Unknown'), f"{r.get('city','')}, {r.get('country','')}", r
+        geo = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
+        open_ports = []
+        for p in [80,443,22,554,8080]:
+            s = socket.socket()
+            s.settimeout(0.5)
+            if s.connect_ex((ip, p)) == 0:
+                open_ports.append(p)
+            s.close()
+        return {"ip": ip, "country": geo.get('country','N/A'), "city": geo.get('city','N/A'), "isp": geo.get('isp','N/A'), "lat": geo.get('lat', 7.6), "lon": geo.get('lon', 5.2), "ports": open_ports}
     except:
-        return "Unknown", "Lagos, Nigeria", {}
+        return None
 
-@app.route("/", methods=["GET","POST"])
+@app.route('/')
 def home():
-    myip, mycity, _ = get_my_ip()
-    target = "143.105.112.29"
-    result = ""
-    if request.method == "POST":
-        target = request.form.get("ip","").strip()
+    return '<h1>Piuscyber P5.0 ULTRA</h1><p>Login + DB + Map + PDF</p><a href="/register">Register</a> | <a href="/login">Login</a> | <a href="/dashboard">Dashboard</a>'
+
+@app.route('/register', methods=['GET','POST'])
+def register():
+    if request.method == 'POST':
+        u = request.form['username']
+        p = generate_password_hash(request.form['password'])
         try:
-            # IP Info
-            info = requests.get(f"https://ipinfo.io/{target}/json", timeout=5).json()
-            city = info.get('city','Unknown')
-            country = info.get('country','Unknown')
-            org = info.get('org','Unknown')
-            loc = info.get('loc','Unknown')
-            
-            # Port Scan
-            open_ports = []
-            for p in [80,81,82,83,84,88,8000,8080,554,37777,34567]:
-                s = socket.socket()
-                s.settimeout(0.6)
-                try:
-                    s.connect((target, p))
-                    open_ports.append(p)
-                except: pass
-                s.close()
-            
-            # Banner
-            banner = "N/A"
-            try:
-                s = socket.socket()
-                s.settimeout(2)
-                s.connect((target, 80))
-                s.send(b"HEAD / HTTP/1.0\r\n\r\n")
-                banner = s.recv(200).decode(errors='ignore').strip()[:150]
-                s.close()
-            except: pass
+            conn = sqlite3.connect('p5.db')
+            conn.execute("INSERT INTO users (username,password) VALUES (?,?)", (u,p))
+            conn.commit()
+            conn.close()
+            return redirect('/login')
+        except:
+            flash("Username exists")
+    return '<h2>Register P5.0</h2><form method="POST"><input name="username" required><input name="password" type="password" required><button>Register</button></form>'
 
-            is_cam = "YES - Possible Camera!" if any(x in open_ports for x in [81,554,37777,34567,88]) else "NO"
-            
-            result = f"""<span class="orange">========== P4.0 PRO SCAN REPORT ==========</span>
-<span class="green">Target:</span> {target}
-<span class="green">Time:</span> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WAT
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        u = request.form['username']
+        pw = request.form['password']
+        conn = sqlite3.connect('p5.db')
+        c = conn.cursor()
+        c.execute("SELECT id,username,password FROM users WHERE username=?", (u,))
+        row = c.fetchone()
+        conn.close()
+        if row and check_password_hash(row[2], pw):
+            login_user(User(row[0], row[1]))
+            return redirect('/dashboard')
+        flash("Wrong login")
+    return '<h2>Login P5.0</h2><form method="POST"><input name="username" required><input name="password" type="password" required><button>Login</button></form>'
 
-<span class="orange">[GEOLOCATION]</span>
-City: {city}, {country}
-Coordinates: {loc}
-ISP/Org: {org}
+@app.route('/dashboard', methods=['GET','POST'])
+@login_required
+def dashboard():
+    result = None
+    if request.method == 'POST':
+        ip = request.form['ip']
+        result = scan_ip(ip)
+        if result:
+            conn = sqlite3.connect('p5.db')
+            conn.execute("INSERT INTO scans (user_id,ip,country,city,isp,date) VALUES (?,?,?,?,?,?)", (current_user.id, result['ip'], result['country'], result['city'], result['isp'], str(datetime.datetime.now())[:19]))
+            conn.commit()
+            conn.close()
+    conn = sqlite3.connect('p5.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM scans WHERE user_id=? ORDER BY id DESC", (current_user.id,))
+    hist = c.fetchall()
+    conn.close()
+    html = f'<h1>Welcome {current_user.username}</h1><a href="/logout">Logout</a><hr><form method="POST"><input name="ip" placeholder="8.8.8.8" required><button>SCAN ULTRA</button></form>'
+    if result:
+        html += f'<h3>{result["ip"]} | {result["country"]} - {result["city"]} | Ports {result["ports"]}</h3><iframe width="100%" height="300" src="https://maps.google.com/maps?q={result["lat"]},{result["lon"]}&z=14&output=embed"></iframe>'
+    html += "<hr><h3>History</h3>"
+    for h in hist:
+        html += f"<p>{h[2]} | {h[3]} | {h[4]} | {h[6]} - <a href='/report/{h[0]}'>PDF</a></p>"
+    return html
 
-<span class="orange">[PORTS]</span>
-Open Ports: {open_ports if open_ports else 'None (Filtered)'}
-Total Open: {len(open_ports)}
+@app.route('/logout')
+def logout():
+    logout_user()
+    return redirect('/')
 
-<span class="orange">[CAMERA DETECTION]</span>
-Camera?: <span class="{'red' if 'YES' in is_cam else 'green'}">{is_cam}</span>
+@app.route('/report/<int:scan_id>')
+@login_required
+def report(scan_id):
+    conn = sqlite3.connect('p5.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM scans WHERE id=?", (scan_id,))
+    s = c.fetchone()
+    conn.close()
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial","B",16)
+    pdf.cell(0,10,"Piuscyber P5.0 ULTRA Report",ln=True,align='C')
+    pdf.set_font("Arial","",12)
+    pdf.ln(10)
+    pdf.cell(0,10,f"IP: {s[2]}",ln=True)
+    pdf.cell(0,10,f"Country: {s[3]}",ln=True)
+    pdf.cell(0,10,f"City: {s[4]}",ln=True)
+    pdf.cell(0,10,f"ISP: {s[5]}",ln=True)
+    pdf.cell(0,10,f"Date: {s[6]}",ln=True)
+    out = pdf.output(dest='S').encode('latin-1')
+    return send_file(io.BytesIO(out), download_name=f"P5_Report_{s[2]}.pdf", as_attachment=True)
 
-<span class="orange">[BANNER]</span>
-{banner}
-
-<span class="orange">[SHODAN / GOOGLE DORK]</span>
-Search: https://www.shodan.io/host/{target}
-Google: inurl:view.shtml intitle:Network Camera {target}
-
-<span class="green">========== SCAN COMPLETE ==========</span>
-"""
-        except Exception as e:
-            result = f"<span class='red'>Error: {e}</span>"
-    
-    return render_template_string(HTML, myip=myip, mycity=mycity, target=target, result=result)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
