@@ -2,3 +2,4 @@ Flask
 requests
 Flask-Login
 fpdf2
+gunicorn
